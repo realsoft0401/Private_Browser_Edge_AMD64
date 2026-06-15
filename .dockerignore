@@ -1,0 +1,12 @@
+.git
+.DS_Store
+
+# 本目录只负责 amd64 浏览器运行镜像打包，构建上下文不应带入旧项目数据、Node 依赖或本地缓存。
+.tmp
+**/__pycache__
+**/*.pyc
+**/node_modules
+
+*.log
+*.tar
+*.tar.gz
