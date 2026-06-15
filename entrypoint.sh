@@ -527,6 +527,7 @@ export CHROME_DISABLE_DEV_SHM_USAGE="${CHROME_DISABLE_DEV_SHM_USAGE:-true}"
 export CHROME_DISABLE_BACKGROUND_NETWORKING="${CHROME_DISABLE_BACKGROUND_NETWORKING:-false}"
 export CHROME_DISABLE_BACKGROUND_THROTTLING="${CHROME_DISABLE_BACKGROUND_THROTTLING:-false}"
 export CHROME_REMOTE_ALLOW_ORIGINS="${CHROME_REMOTE_ALLOW_ORIGINS:-}"
+export CHROME_DISABLE_BLINK_AUTOMATION_CONTROLLED="${CHROME_DISABLE_BLINK_AUTOMATION_CONTROLLED:-true}"
 
 # 这里打印镜像契约的来历：
 # - 商业版环境包后续需要知道自己依赖哪个浏览器镜像、Chromium 版本和指纹注入版本；
@@ -864,7 +865,6 @@ CHROME_ARGS=(
   "--disable-accelerated-2d-canvas"
   "--force-effective-connection-type=4g"
   "--disable-features=UseSkiaRenderer,Translate,MediaRouter,OptimizationHints"
-  "--disable-blink-features=AutomationControlled"
   "--remote-debugging-address=127.0.0.1"
   "--remote-debugging-port=${INTERNAL_DEBUG_PORT}"
   "--user-data-dir=${USER_DATA_DIR}"
@@ -904,6 +904,18 @@ fi
 
 if [ -n "${CHROME_REMOTE_ALLOW_ORIGINS}" ]; then
   CHROME_ARGS+=("--remote-allow-origins=${CHROME_REMOTE_ALLOW_ORIGINS}")
+fi
+
+if [ "${CHROME_DISABLE_BLINK_AUTOMATION_CONTROLLED}" = "true" ]; then
+  # 这里保留条件开关的原因：
+  # - 当前项目的正式默认基线不应把 AutomationControlled 固化进所有商业运行镜像；
+  # - 但用户已经明确要求保留“受控实验时可显式打开”的入口，避免后续又回到手改脚本分支；
+  # - 因此这里只在显式环境变量开启时追加该参数，让代码行为和 README/agent 口径重新一致。
+  #
+  # 职责边界：
+  # - 这里只负责条件追加 Chromium 参数，不判断第三方站点是否允许自动化访问；
+  # - 是否启用该参数由受控测试环境或调用方自己承担，不应被默认镜像静默继承。
+  CHROME_ARGS+=("--disable-blink-features=AutomationControlled")
 fi
 
 if [ "${CHROME_HEADLESS}" = "true" ]; then
@@ -947,6 +959,23 @@ if ! wait_for_chromium_cdp_ready; then
   kill "${chrome_pid}" >/dev/null 2>&1 || true
   wait "${chrome_pid}" >/dev/null 2>&1 || true
   exit 1
+fi
+
+# 这段启动链收口的来历：
+# - 之前仓库里已经有 fp_inject.py / fp_daemon.py，但 entrypoint 没把它们接进正式启动链；
+# - 结果会出现“脚本存在、文档提到过、实际镜像却没有跑”的三套事实，排障时很难判断刷新后注入是否仍在；
+# - 现在把两者都接回启动链：fp_inject 负责冷启动当前页和首次导航，fp_daemon 负责后续 page target 的持续安装。
+#
+# 职责边界：
+# - 这里只在 CDP 健康检查通过后启动注入链，避免把 CDP 未就绪误判成指纹脚本失败；
+# - 指纹配置为空时脚本会自行退出，不会把“无指纹配置”的普通运行态误报为容器失败；
+# - daemon 只做脚本安装，不接管业务导航、点击或第三方站点交互。
+if [ -n "${FINGERPRINT_RUNTIME_CONFIG_BASE64}" ]; then
+  python3 /app/scripts/fp_inject.py >/tmp/fp_inject.log 2>&1 || {
+    echo "fp_inject startup failed" >&2
+    tail -n 80 /tmp/fp_inject.log >&2 || true
+  }
+  python3 /app/scripts/fp_daemon.py >/tmp/fp_daemon.log 2>&1 &
 fi
 
 wait "${chrome_pid}"

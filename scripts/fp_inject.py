@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """
-CDP Fingerprint Injection Script - Private Browser Edge (stable v1.2).
+CDP Fingerprint Injection Script - Private Browser Edge.
 
-Called by entrypoint.sh at container startup, or independently by the edge
-service whenever a new page target is created.
+设计来源：
+- 旧链路只在当前页面执行 Runtime.evaluate，遇到刷新或重定向时，新文档会失去归一化脚本；
+- 当前脚本在启动阶段先注册 Page.addScriptToEvaluateOnNewDocument，再对当前文档补打一轮，
+  这样 about:blank、首次导航和同一 target 内的新文档都能保持同一份注入逻辑。
 
-Flow at startup:
-  1. Inject into about:blank page
-  2. Navigate to START_URL
-  3. Wait for navigation, then re-inject
-
-Environment:
-  FINGERPRINT_RUNTIME_CONFIG_BASE64   base64-encoded JSON config (required)
-  INTERNAL_DEBUG_PORT                 CDP port (default 19222)
-  START_URL                           page to navigate to after injection
+职责边界：
+- 只负责容器冷启动时的第一轮注入和首个 START_URL 导航；
+- 不负责长期监听页面变化，那部分交给 fp_daemon.py；
+- 不负责站点业务判断，导航失败只输出启动日志，由上层按容器失败事实处理。
 """
 import json, sys, os, subprocess, time, websocket
 
@@ -60,12 +57,26 @@ def get_pages():
         return json.loads(subprocess.check_output(["curl","-s",f"{CDP}/json/list"]))
     except: return []
 
-def inject_page(ws_url):
+def call(ws, method, params, msg_id):
+    ws.send(json.dumps({"id": msg_id, "method": method, "params": params}))
+    while True:
+        resp = json.loads(ws.recv())
+        if resp.get("id") != msg_id:
+            continue
+        return resp
+
+
+def install_page(ws_url):
     try:
         ws=websocket.create_connection(ws_url,timeout=5,suppress_origin=True)
         try:
-            ws.send(json.dumps({"id":1,"method":"Runtime.evaluate","params":{"expression":INJECT_JS,"returnByValue":True}}))
-            resp=json.loads(ws.recv())
+            page_enable = call(ws, "Page.enable", {}, 1)
+            if "error" in page_enable:
+                return False
+            register = call(ws, "Page.addScriptToEvaluateOnNewDocument", {"source": INJECT_JS}, 2)
+            if "error" in register:
+                return False
+            resp = call(ws, "Runtime.evaluate", {"expression": INJECT_JS, "returnByValue": True}, 3)
             return "error" not in resp
         finally: ws.close()
     except: return False
@@ -91,8 +102,8 @@ if not page_targets:
 first=page_targets[0]
 ws=first["webSocketDebuggerUrl"]
 
-ok=inject_page(ws)
-print(f"fp_inject [1/3] inject about:blank: {'OK' if ok else 'FAIL'}")
+ok=install_page(ws)
+print(f"fp_inject [1/3] install about:blank: {'OK' if ok else 'FAIL'}")
 
 if START and START!="about:blank":
     ok=navigate_page(ws,START)
@@ -101,8 +112,8 @@ if START and START!="about:blank":
     pages=get_pages()
     for p in pages:
         if p.get("type")=="page":
-            ok=inject_page(p["webSocketDebuggerUrl"])
-            print(f"fp_inject [3/3] re-inject: {'OK' if ok else 'FAIL'}")
+            ok=install_page(p["webSocketDebuggerUrl"])
+            print(f"fp_inject [3/3] install after navigate: {'OK' if ok else 'FAIL'}")
             break
 
 print("fp_inject: complete")

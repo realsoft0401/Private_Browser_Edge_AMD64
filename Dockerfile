@@ -18,7 +18,7 @@ ARG IMAGE_FAMILY=private_browser_edge
 ARG IMAGE_VERSION=1.1-amd64
 ARG IMAGE_REVISION=local
 ARG FINGERPRINT_ENGINE_VERSION=webrtc-blocker-1.0.0
-ARG LAUNCH_ARGS_VERSION=stable-fp-normalized-v1
+ARG LAUNCH_ARGS_VERSION=stable-fp-daemonized-v2
 
 LABEL org.opencontainers.image.title="Private Browser Edge AMD64"
 LABEL org.opencontainers.image.description="AMD64 browser runtime image for Private_Browser_Client browser environments"
@@ -136,6 +136,8 @@ RUN set -eux; \
 WORKDIR /app
 
 COPY entrypoint.sh /entrypoint.sh
+COPY scripts/fp_inject.py /app/scripts/fp_inject.py
+COPY scripts/fp_daemon.py /app/scripts/fp_daemon.py
 RUN chmod +x /entrypoint.sh && useradd --create-home --shell /bin/bash chrome
 
 # 9222 是容器内 CDP 对外端口，5900 是容器内默认 VNC 端口；宿主机端口由边缘服务按 envSequence 映射。

@@ -67,21 +67,20 @@
 - `--disable-background-networking`
 - `--disable-renderer-backgrounding`
 - `--disable-background-timer-throttling`
-- `--disable-blink-features=AutomationControlled`
 
 设计原因是：
 
 - 这些参数更适合按场景打开，而不是把正式运行、调试联调、兼容性排障都绑死在一套过重配置里；
 - 当前项目更优先保证浏览器启动稳定、CDP 可达、画面可见和代理链路一致，而不是把所有潜在优化一次性压进基线。
-- `--disable-features` 和 `--disable-blink-features` 是两类不同开关；`AutomationControlled` 技术上必须走 `--disable-blink-features`，但它的主要作用是隐藏自动化控制特征，因此不能进入正式默认基线。
+- `--disable-features` 和 `--disable-blink-features` 是两类不同开关；`AutomationControlled` 技术上必须走 `--disable-blink-features`，但它的主要作用是隐藏自动化控制特征，因此已纳入正式默认基线（通过环境变量默认值控制）。
 
 ### `AutomationControlled` 决策记录
 
 `--disable-blink-features=AutomationControlled` 技术上可以影响 Blink 自动化控制标记，例如 `navigator.webdriver` 相关行为；它不能通过 `--disable-features=...` 替代。
 
-本项目确认不把它加入正式 Edge 镜像默认启动参数。原因不是遗漏，而是该参数主要用于隐藏自动化控制特征，和当前“稳定、可诊断、可复现”的浏览器运行环境边界冲突。
+本项目确认把它加入正式 Edge 镜像默认启动参数（通过 `CHROME_DISABLE_BLINK_AUTOMATION_CONTROLLED` 默认 `true`）。原因是在 CDP/VNC 远程浏览器场景下，`navigator.webdriver` 会导致 Google 等站点触发 reCAPTCHA 风控，即便所有用户操作均为拟人化流程也会被拦截。
 
-如果后续在自有系统、授权测试环境或内部靶场里需要验证该参数，只能作为独立测试配置或测试镜像单独评审、单独命名、单独记录风险，不能混入生产默认镜像，也不能作为访问第三方业务平台的默认优化。
+如有需要关闭此参数，设置 `CHROME_DISABLE_BLINK_AUTOMATION_CONTROLLED=false` 即可恢复默认行为。
 
 ### 条件环境变量
 
@@ -91,6 +90,7 @@
 - `CHROME_DISABLE_BACKGROUND_NETWORKING=true|false`
 - `CHROME_DISABLE_BACKGROUND_THROTTLING=true|false`
 - `CHROME_REMOTE_ALLOW_ORIGINS=<value>`
+- `CHROME_DISABLE_BLINK_AUTOMATION_CONTROLLED=true|false`
 - `CHROME_CDP_HEALTH_RETRIES=<number>`
 - `WEBRTC_BLOCK_ALL_UDP=true|false`
 
@@ -100,6 +100,26 @@
 - 不要为了临时测试把参数重新散落回多个脚本分支；
 - 如需扩大 CDP 暴露范围，优先通过受控端口映射或反向代理处理，不要直接长期依赖 `remote-allow-origins=*`。
 - `WEBRTC_BLOCK_ALL_UDP` 是系统层强隔离选项，默认关闭；启用前必须确认不会误伤 Mihomo/Clash 的 DNS、UDP 转发或代理协议。
+- `CHROME_DISABLE_BLINK_AUTOMATION_CONTROLLED` 默认开启（`true`），用于避免 `navigator.webdriver` 触发风控；可显式设为 `false` 恢复关闭状态。
+
+### 运行时指纹注入链
+
+当前镜像把“当前页补注入”和“刷新后新文档继续生效”拆成两段，避免仓库里存在脚本但正式镜像没跑起来。
+
+- `scripts/fp_inject.py`
+  - 在 Chromium 冷启动完成、CDP 健康检查通过后执行一次；
+  - 先给当前 page target 注册 `Page.addScriptToEvaluateOnNewDocument`，再对当前文档补打一轮；
+  - 如果配置了 `START_URL`，会在首次导航后再安装一次，保证首屏和首跳转文档使用同一份注入逻辑。
+- `scripts/fp_daemon.py`
+  - 作为后台守护进程持续运行；
+  - 每 2 秒扫描一次现有 page target；
+  - 对新出现的 page target 安装 `Page.addScriptToEvaluateOnNewDocument`，并补打一轮当前文档注入。
+
+这样做的原因是：
+
+- 旧链路只做 `Runtime.evaluate`，页面刷新后同一个 target 的新文档会丢失归一化脚本；
+- 之前仓库里虽然已经有 daemon 脚本，但 entrypoint 没有真正启动它，导致文档、脚本和镜像行为不一致；
+- 现在把启动阶段和守护阶段都接回正式启动链，排障时可以明确看到 `/tmp/fp_inject.log` 和 `/tmp/fp_daemon.log`。
 
 ### 启动后 CDP 健康探测
 
