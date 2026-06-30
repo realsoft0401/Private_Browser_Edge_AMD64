@@ -101,7 +101,6 @@
 - 如需扩大 CDP 暴露范围，优先通过受控端口映射或反向代理处理，不要直接长期依赖 `remote-allow-origins=*`。
 - `WEBRTC_BLOCK_ALL_UDP` 是系统层强隔离选项，默认关闭；启用前必须确认不会误伤 Mihomo/Clash 的 DNS、UDP 转发或代理协议。
 - `CHROME_DISABLE_BLINK_AUTOMATION_CONTROLLED` 默认开启（`true`），用于避免 `navigator.webdriver` 触发风控；可显式设为 `false` 恢复关闭状态。
-
 ### 运行时指纹注入链
 
 当前镜像把“当前页补注入”和“刷新后新文档继续生效”拆成两段，避免仓库里存在脚本但正式镜像没跑起来。
@@ -210,6 +209,14 @@ cd Private_Browser_Edge_AMD64
 
 - [fingerprint-testing-sites.md](/Users/lining/Documents/Browser_virtualization/Private_Browser_Edge_AMD64/fingerprint-testing-sites.md)
 
+## 时区一致性方案
+
+`edge_amd64` 当前正在补一份独立的时区一致性收口方案，专门解释为什么会出现
+“页面 timezone 看起来正确，但系统层 timezone 仍然不一致”的分裂，以及后续应该
+如何把环境包 timezone、容器系统时区和浏览器 JS 暴露统一到同一条链路上。
+
+- [timezone-alignment-plan.md](/Users/lining/Documents/Browser_virtualization/Private_Browser_Edge_AMD64/timezone-alignment-plan.md)
+
 ## 维护原则
 
 - 不要把这里改回 amd64/arm64 混合构建。
@@ -218,3 +225,32 @@ cd Private_Browser_Edge_AMD64
 - 如果以后恢复 arm64，应该新增独立目录或明确 multi-arch 契约，再让服务端决定下发哪个镜像。
 - 不要恢复 `tint2`、桌面托盘或 Clash Verge GUI 作为 proxy 入口；当前方案是 Mihomo core + 浏览器状态扩展。
 - 不要在容器内静默改写 `proxy/clash.yaml`。如果配置里 `tun.enable=true`，运行容器时必须提供 `NET_ADMIN` 和 `/dev/net/tun`；条件不满足时应明确失败，避免出现代理链路看似启动但实际规则/DNS 保护被削弱。
+
+
+cd /Users/lining/Documents/Browser_virtualization/Private_Browser_Edge_AMD64
+./scripts/build-amd64.sh \
+  --platform linux/amd64 \
+  --image crpi-6s60spbjvluac8j8.cn-shanghai.personal.cr.aliyuncs.com/ln0216/private_browser_edge \
+  --tag 1.1-amd64 \
+  --push
+
+
+
+
+
+
+
+cd /Users/lining/Documents/Browser_virtualization/Private_Browser_Edge_AMD64
+
+docker buildx build \
+  --platform linux/amd64 \
+  --no-cache \
+  --push \
+  --build-arg DOCKERHUB_MIRROR=docker.m.daocloud.io \
+  --build-arg DEBIAN_MIRROR=mirrors.tuna.tsinghua.edu.cn \
+  --build-arg CLASH_VERGE_VERSION=2.4.7 \
+  --build-arg IMAGE_FAMILY=private_browser_edge \
+  --build-arg IMAGE_VERSION=1.1-amd64 \
+  --build-arg IMAGE_REVISION=local \
+  -t crpi-6s60spbjvluac8j8.cn-shanghai.personal.cr.aliyuncs.com/ln0216/private_browser_edge:1.1-amd64 \
+  .
